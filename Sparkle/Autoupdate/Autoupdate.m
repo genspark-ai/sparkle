@@ -82,8 +82,18 @@ static const NSTimeInterval SUTerminationTimeDelay = 0.5;
 
 - (void)applicationDidFinishLaunching:(NSNotification __unused *)notification
 {
+    SULog(SULogLevelDefault, @"Autoupdate process started");
+    SULog(SULogLevelDefault, @"Process parameters:");
+    SULog(SULogLevelDefault, @"Host path: %@", self.hostPath);
+    SULog(SULogLevelDefault, @"Relaunch path: %@", self.relaunchPath);
+    SULog(SULogLevelDefault, @"Update folder path: %@", self.updateFolderPath);
+    SULog(SULogLevelDefault, @"Should relaunch: %@", self.shouldRelaunch ? @"YES" : @"NO");
+    SULog(SULogLevelDefault, @"Should show UI: %@", self.shouldShowUI ? @"YES" : @"NO");
+
     [self.terminationListener startListeningWithCompletion:^(BOOL terminationSuccess) {
         self.terminationListener = nil;
+        
+        SULog(SULogLevelDefault, @"Parent process listening completed: %@", terminationSuccess ? @"SUCCESS" : @"FAILED");
         
         if (!terminationSuccess) {
             SULog(SULogLevelError, @"Failed to listen for application termination");
@@ -100,6 +110,7 @@ static const NSTimeInterval SUTerminationTimeDelay = 0.5;
             });
         }
         
+        SULog(SULogLevelDefault, @"Starting installation");
         [self install];
     }];
 }
@@ -116,21 +127,26 @@ static const NSTimeInterval SUTerminationTimeDelay = 0.5;
 
 - (void)install
 {
+    SULog(SULogLevelDefault, @"Performing installation");
+    
     NSBundle *theBundle = [NSBundle bundleWithPath:self.hostPath];
     SUHost *host = [[SUHost alloc] initWithBundle:theBundle];
     
     NSString *fileOperationToolPath = [[[[NSBundle mainBundle] executablePath] stringByDeletingLastPathComponent] stringByAppendingPathComponent:@""SPARKLE_FILEOP_TOOL_NAME];
     
     if (![[NSFileManager defaultManager] fileExistsAtPath:fileOperationToolPath]) {
-        SULog(SULogLevelError, @"Potential Installation Error: File operation tool path %@ is not found", fileOperationToolPath);
+        SULog(SULogLevelError, @"Potential installation error: File operation tool path not found: %@", fileOperationToolPath);
     }
     
     NSError *retrieveInstallerError = nil;
     id<SUInstallerProtocol> installer = [SUInstaller installerForHost:host fileOperationToolPath:fileOperationToolPath updateDirectory:self.updateFolderPath error:&retrieveInstallerError];
     if (installer == nil) {
-        SULog(SULogLevelError, @"Retrieved Installer Error: %@", retrieveInstallerError);
+        SULog(SULogLevelError, @"Retrieved installer error: %@", retrieveInstallerError);
         exit(EXIT_FAILURE);
     }
+    
+    SULog(SULogLevelDefault, @"Using installer: %@", NSStringFromClass([installer class]));
+    SULog(SULogLevelDefault, @"Installer supports silent install: %@", [installer canInstallSilently] ? @"YES" : @"NO");
     
     if (self.shouldShowUI && [installer canInstallSilently]) {
         self.statusController = [[SUStatusController alloc] initWithHost:host];
@@ -143,7 +159,7 @@ static const NSTimeInterval SUTerminationTimeDelay = 0.5;
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         NSError *initialInstallationError = nil;
         if (![installer performInitialInstallation:&initialInstallationError]) {
-            SULog(SULogLevelError, @"Failed to perform initial installation with error: %@", initialInstallationError);
+            SULog(SULogLevelError, @"Failed to perform initial installation: %@", initialInstallationError);
             dispatch_async(dispatch_get_main_queue(), ^{
                 [self showError:initialInstallationError];
                 exit(EXIT_FAILURE);
@@ -162,7 +178,7 @@ static const NSTimeInterval SUTerminationTimeDelay = 0.5;
             NSError *underlyingError = [finalInstallationError.userInfo objectForKey:NSUnderlyingErrorKey];
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (underlyingError == nil || underlyingError.code != SUInstallationCancelledError) {
-                    SULog(SULogLevelError, @"Failed to perform final installation Error: %@", finalInstallationError);
+                    SULog(SULogLevelError, @"Failed to perform final installation: %@", finalInstallationError);
                     [self showError:finalInstallationError];
                 }
                 exit(EXIT_FAILURE);
@@ -188,16 +204,21 @@ static const NSTimeInterval SUTerminationTimeDelay = 0.5;
 
 - (void)cleanupAndTerminateWithPathToRelaunch:(NSString *)relaunchPath
 {
+    SULog(SULogLevelDefault, @"Starting cleanup and relaunch process");
+    SULog(SULogLevelDefault, @"Relaunch path: %@", relaunchPath);
+    SULog(SULogLevelDefault, @"Should relaunch: %@", self.shouldRelaunch ? @"YES" : @"NO");
+    
     self.isTerminating = YES;
     
     dispatch_block_t cleanupAndExit = ^{
         NSError *theError = nil;
         if (![[NSFileManager defaultManager] removeItemAtPath:self.updateFolderPath error:&theError]) {
-            SULog(SULogLevelError, @"Couldn't remove update folder: %@.", theError);
+            SULog(SULogLevelError, @"Could not remove update folder: %@", theError);
         }
         
         [[NSFileManager defaultManager] removeItemAtPath:[[NSBundle mainBundle] bundlePath] error:NULL];
         
+        SULog(SULogLevelDefault, @"Autoupdate process will exit");
         exit(EXIT_SUCCESS);
     };
     
@@ -208,8 +229,11 @@ static const NSTimeInterval SUTerminationTimeDelay = 0.5;
         // The only remedy I've been able to find is waiting an arbitrary delay before exiting our application
         
         // Don't use -launchApplication: because we may not be launching an application. Eg: it could be a system prefpane
+        SULog(SULogLevelDefault, @"Preparing to launch new app: %@", relaunchPath);
         if (![[NSWorkspace sharedWorkspace] openFile:relaunchPath]) {
-            SULog(SULogLevelError, @"Failed to launch %@", relaunchPath);
+            SULog(SULogLevelError, @"Failed to launch: %@", relaunchPath);
+        } else {
+            SULog(SULogLevelDefault, @"Successfully launched new app");
         }
         
         [self.statusController close];
