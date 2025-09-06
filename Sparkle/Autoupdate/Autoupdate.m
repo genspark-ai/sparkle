@@ -14,7 +14,7 @@
 /*!
  * If the Installation takes longer than this time the Application Icon is shown in the Dock so that the user has some feedback.
  */
-static const NSTimeInterval SUInstallationTimeLimit = 5;
+static const NSTimeInterval SUInstallationTimeLimit = 3;
 
 /*!
  * Terminate the application after a delay from launching the new update to avoid OS activation issues
