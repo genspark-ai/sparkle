@@ -23,6 +23,13 @@ static const NSTimeInterval SUInstallationTimeLimit = 5;
  */
 static const NSTimeInterval SUTerminationTimeDelay = 0.5;
 
+/*! 
+ * Additional delay after parent process termination before starting installation
+ * This ensures system resources are fully released and helps prevent file replacement failures
+ * that can occur during the critical Progress 9/10 installation phase
+ */
+static const NSTimeInterval SUPreInstallationDelay = 5.0;
+
 @interface AppInstaller : NSObject <NSApplicationDelegate>
 
 /*
@@ -110,8 +117,12 @@ static const NSTimeInterval SUTerminationTimeDelay = 0.5;
             });
         }
         
-        SULog(SULogLevelDefault, @"Starting installation");
-        [self install];
+        // Additional delay after parent process termination to ensure system resources are fully released
+        SULog(SULogLevelDefault, @"Parent application terminated, waiting additional %.0f seconds before installation...", SUPreInstallationDelay);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(SUPreInstallationDelay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            SULog(SULogLevelDefault, @"Pre-installation wait period completed, starting installation...");
+            [self install];
+        });
     }];
 }
 
