@@ -159,11 +159,22 @@ static void SUWriteToLogFile(NSString *message, SULogLevel level) {
         ];
         
         // Test which path is writable
+        NSString *testContent = @"Sparkle log init\n";
         for (NSString *testPath in candidatePaths) {
-            NSString *testContent = @"Sparkle log init\n";
-            if ([testContent writeToFile:testPath atomically:NO encoding:NSUTF8StringEncoding error:nil]) {
+            NSFileHandle *testHandle = [NSFileHandle fileHandleForWritingAtPath:testPath];
+            if (testHandle) {
+                // Test actual write capability
+                [testHandle seekToEndOfFile];
+                [testHandle writeData:[testContent dataUsingEncoding:NSUTF8StringEncoding]];
+                [testHandle closeFile];
                 logFilePath = [testPath copy];
                 break;
+            } else {
+                // File not exist, try to create and write
+                if ([testContent writeToFile:testPath atomically:NO encoding:NSUTF8StringEncoding error:nil]) {
+                    logFilePath = [testPath copy];
+                    break;
+                }
             }
         }
         
