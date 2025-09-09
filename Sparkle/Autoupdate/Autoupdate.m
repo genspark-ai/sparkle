@@ -10,6 +10,86 @@
 #import "TerminationListener.h"
 
 #include <unistd.h>
+#include <signal.h>
+
+// Simple upgrade lock implementation
+@interface SUUpgradeLock : NSObject
+- (instancetype)init;
+- (BOOL)createLock;
+- (BOOL)releaseLock;
+- (void)emergencyCleanup;
+@end
+
+@interface SUUpgradeLock ()
+@property (nonatomic, copy, nullable) NSString *lockFilePath;
+@end
+
+@implementation SUUpgradeLock
+
+- (instancetype)init {
+    if (!(self = [super init])) {
+        return nil;
+    }
+    return self;
+}
+
+- (BOOL)createLock {
+    if (self.lockFilePath) {
+        return YES;
+    }
+    
+    NSString *lockPath = @"/tmp/ai.genspark.lock";
+    
+    if ([[NSFileManager defaultManager] fileExistsAtPath:lockPath]) {
+        SULog(SULogLevelDefault, @"Upgrade lock exists, continuing");
+        return YES;
+    }
+    
+    self.lockFilePath = lockPath;
+    
+    // URL query format for easier parsing
+    NSString *lockContent = [NSString stringWithFormat:@"pid=%d&start_time=%.0f", 
+                            getpid(), 
+                            [[NSDate date] timeIntervalSince1970]];
+    
+    if ([lockContent writeToFile:self.lockFilePath 
+                      atomically:YES 
+                        encoding:NSUTF8StringEncoding 
+                           error:nil]) {
+        SULog(SULogLevelDefault, @"Created upgrade lock at path: %@", self.lockFilePath);
+        return YES;
+    } else {
+        SULog(SULogLevelError, @"Failed to create upgrade lock at path: %@", lockPath);
+        self.lockFilePath = nil;
+        return NO;
+    }
+}
+
+- (BOOL)releaseLock {
+    if (!self.lockFilePath) {
+        return YES;
+    }
+    
+    NSError *error = nil;
+    if ([[NSFileManager defaultManager] removeItemAtPath:self.lockFilePath error:&error]) {
+        SULog(SULogLevelDefault, @"Released upgrade lock at path: %@", self.lockFilePath);
+        self.lockFilePath = nil;
+        return YES;
+    } else {
+        SULog(SULogLevelError, @"Failed to release upgrade lock at path: %@", self.lockFilePath);
+        return NO;
+    }
+}
+
+- (void)emergencyCleanup {
+    if (self.lockFilePath && [[NSFileManager defaultManager] fileExistsAtPath:self.lockFilePath]) {
+        [[NSFileManager defaultManager] removeItemAtPath:self.lockFilePath error:nil];
+        SULog(SULogLevelDefault, @"Emergency cleanup: removed upgrade lock at path: %@", self.lockFilePath);
+    }
+    self.lockFilePath = nil;
+}
+
+@end
 
 /*!
  * If the Installation takes longer than this time the Application Icon is shown in the Dock so that the user has some feedback.
@@ -57,6 +137,8 @@ static const NSTimeInterval SUPreInstallationDelay = 3.0;
 
 @property (nonatomic, assign) BOOL isTerminating;
 
+@property (nonatomic, strong) SUUpgradeLock *upgradeLock;
+
 @end
 
 @implementation AppInstaller
@@ -69,6 +151,7 @@ static const NSTimeInterval SUPreInstallationDelay = 3.0;
 @synthesize shouldRelaunch = _shouldRelaunch;
 @synthesize shouldShowUI = _shouldShowUI;
 @synthesize isTerminating = _isTerminating;
+@synthesize upgradeLock = _upgradeLock;
 
 - (instancetype)initWithHostPath:(NSString *)hostPath relaunchPath:(NSString *)relaunchPath parentProcessId:(pid_t)parentProcessId updateFolderPath:(NSString *)updateFolderPath shouldRelaunch:(BOOL)shouldRelaunch shouldShowUI:(BOOL)shouldShowUI
 {
@@ -83,6 +166,18 @@ static const NSTimeInterval SUPreInstallationDelay = 3.0;
     self.updateFolderPath = updateFolderPath;
     self.shouldRelaunch = shouldRelaunch;
     self.shouldShowUI = shouldShowUI;
+    
+    // Create and initialize upgrade lock (best effort, don't block upgrade on failure)
+    @try {
+        self.upgradeLock = [[SUUpgradeLock alloc] init];
+        if (![self.upgradeLock createLock]) {
+            SULog(SULogLevelDefault, @"Could not create upgrade lock, continuing without it");
+            self.upgradeLock = nil;
+        }
+    } @catch (NSException *exception) {
+        SULog(SULogLevelDefault, @"Exception creating upgrade lock: %@, continuing without it", exception.reason);
+        self.upgradeLock = nil;
+    }
     
     return self;
 }
@@ -172,6 +267,10 @@ static const NSTimeInterval SUPreInstallationDelay = 3.0;
         if (![installer performInitialInstallation:&initialInstallationError]) {
             SULog(SULogLevelError, @"Failed to perform initial installation: %@", initialInstallationError);
             dispatch_async(dispatch_get_main_queue(), ^{
+                // Emergency cleanup on installation failure
+                if (self.upgradeLock) {
+                    [self.upgradeLock emergencyCleanup];
+                }
                 [self showError:initialInstallationError];
                 exit(EXIT_FAILURE);
             });
@@ -190,6 +289,10 @@ static const NSTimeInterval SUPreInstallationDelay = 3.0;
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (underlyingError == nil || underlyingError.code != SUInstallationCancelledError) {
                     SULog(SULogLevelError, @"Failed to perform final installation: %@", finalInstallationError);
+                    // Emergency cleanup on installation failure
+                    if (self.upgradeLock) {
+                        [self.upgradeLock emergencyCleanup];
+                    }
                     [self showError:finalInstallationError];
                 }
                 exit(EXIT_FAILURE);
@@ -220,6 +323,15 @@ static const NSTimeInterval SUPreInstallationDelay = 3.0;
     SULog(SULogLevelDefault, @"Should relaunch: %@", self.shouldRelaunch ? @"YES" : @"NO");
     
     self.isTerminating = YES;
+    
+    // Release upgrade lock before browser relaunch
+    if (self.upgradeLock) {
+        if ([self.upgradeLock releaseLock]) {
+            SULog(SULogLevelDefault, @"Upgrade lock released successfully");
+        } else {
+            SULog(SULogLevelError, @"Failed to release upgrade lock");
+        }
+    }
     
     dispatch_block_t cleanupAndExit = ^{
         NSError *theError = nil;
