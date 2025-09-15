@@ -28,7 +28,7 @@ static void staticCleanupAndExit(int exitCode) {
         }
     }
 
-    // Call system exit
+    // Call system exit immediately (no complex logging to wait for)
     exit(exitCode);
 }
 
@@ -223,8 +223,10 @@ static const NSTimeInterval SUPreInstallationDelay = 3.0;
         }
     }
 
-    // Call system exit
-    exit(exitCode);
+    // Delay exit to allow async file logging to complete
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        exit(exitCode);
+    });
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification __unused *)notification
