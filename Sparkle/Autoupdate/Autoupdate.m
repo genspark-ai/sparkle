@@ -12,6 +12,26 @@
 #include <unistd.h>
 #include <signal.h>
 
+// Upgrade lock file path - used across all lock operations
+static NSString * const SUUpgradeLockFilePath = @"/tmp/ai.genspark.lock";
+
+// Static cleanup function for main() usage when AppInstaller is not available
+static void staticCleanupAndExit(int exitCode) {
+    SULog(SULogLevelDefault, @"staticCleanupAndExit called with code: %d", exitCode);
+
+    // Direct cleanup of lock file since no AppInstaller instance available
+    if ([[NSFileManager defaultManager] fileExistsAtPath:SUUpgradeLockFilePath]) {
+        if ([[NSFileManager defaultManager] removeItemAtPath:SUUpgradeLockFilePath error:nil]) {
+            SULog(SULogLevelDefault, @"Static cleanup of upgrade lock successful");
+        } else {
+            SULog(SULogLevelError, @"Static cleanup of upgrade lock failed");
+        }
+    }
+
+    // Call system exit
+    exit(exitCode);
+}
+
 // Simple upgrade lock implementation
 @interface SUUpgradeLock : NSObject
 - (instancetype)init;
@@ -38,11 +58,10 @@
         return YES;
     }
     
-    NSString *lockPath = @"/tmp/ai.genspark.lock";
-    
+    NSString *lockPath = SUUpgradeLockFilePath;
+
     if ([[NSFileManager defaultManager] fileExistsAtPath:lockPath]) {
-        SULog(SULogLevelDefault, @"Upgrade lock exists, continuing");
-        return YES;
+        SULog(SULogLevelDefault, @"Upgrade lock exists, overwriting with current process info");
     }
     
     self.lockFilePath = lockPath;
@@ -52,9 +71,9 @@
                             getpid(), 
                             [[NSDate date] timeIntervalSince1970]];
     
-    if ([lockContent writeToFile:self.lockFilePath 
-                      atomically:YES 
-                        encoding:NSUTF8StringEncoding 
+    if ([lockContent writeToFile:self.lockFilePath
+                      atomically:YES
+                        encoding:NSUTF8StringEncoding
                            error:nil]) {
         SULog(SULogLevelDefault, @"Created upgrade lock at path: %@", self.lockFilePath);
         return YES;
@@ -139,6 +158,8 @@ static const NSTimeInterval SUPreInstallationDelay = 3.0;
 
 @property (nonatomic, strong) SUUpgradeLock *upgradeLock;
 
+- (void)cleanupAndExit:(int)exitCode;
+
 @end
 
 @implementation AppInstaller
@@ -180,6 +201,30 @@ static const NSTimeInterval SUPreInstallationDelay = 3.0;
     }
     
     return self;
+}
+
+- (void)cleanupAndExit:(int)exitCode
+{
+    SULog(SULogLevelDefault, @"cleanupAndExit called with code: %d", exitCode);
+
+    // Cleanup upgrade lock if available
+    if (self.upgradeLock) {
+        [self.upgradeLock emergencyCleanup];
+        SULog(SULogLevelDefault, @"Cleaned up upgrade lock via AppInstaller");
+    } else {
+        // Fallback: direct cleanup of lock file
+        NSString *lockPath = SUUpgradeLockFilePath;
+        if ([[NSFileManager defaultManager] fileExistsAtPath:lockPath]) {
+            if ([[NSFileManager defaultManager] removeItemAtPath:lockPath error:nil]) {
+                SULog(SULogLevelDefault, @"Direct cleanup of upgrade lock successful");
+            } else {
+                SULog(SULogLevelError, @"Direct cleanup of upgrade lock failed");
+            }
+        }
+    }
+
+    // Call system exit
+    exit(exitCode);
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification __unused *)notification
@@ -248,7 +293,7 @@ static const NSTimeInterval SUPreInstallationDelay = 3.0;
     id<SUInstallerProtocol> installer = [SUInstaller installerForHost:host fileOperationToolPath:fileOperationToolPath updateDirectory:self.updateFolderPath error:&retrieveInstallerError];
     if (installer == nil) {
         SULog(SULogLevelError, @"Retrieved installer error: %@", retrieveInstallerError);
-        exit(EXIT_FAILURE);
+        [self cleanupAndExit:EXIT_FAILURE];
     }
     
     SULog(SULogLevelDefault, @"Using installer: %@", NSStringFromClass([installer class]));
@@ -267,12 +312,8 @@ static const NSTimeInterval SUPreInstallationDelay = 3.0;
         if (![installer performInitialInstallation:&initialInstallationError]) {
             SULog(SULogLevelError, @"Failed to perform initial installation: %@", initialInstallationError);
             dispatch_async(dispatch_get_main_queue(), ^{
-                // Emergency cleanup on installation failure
-                if (self.upgradeLock) {
-                    [self.upgradeLock emergencyCleanup];
-                }
                 [self showError:initialInstallationError];
-                exit(EXIT_FAILURE);
+                [self cleanupAndExit:EXIT_FAILURE];
             });
             return;
         }
@@ -289,13 +330,9 @@ static const NSTimeInterval SUPreInstallationDelay = 3.0;
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (underlyingError == nil || underlyingError.code != SUInstallationCancelledError) {
                     SULog(SULogLevelError, @"Failed to perform final installation: %@", finalInstallationError);
-                    // Emergency cleanup on installation failure
-                    if (self.upgradeLock) {
-                        [self.upgradeLock emergencyCleanup];
-                    }
                     [self showError:finalInstallationError];
                 }
-                exit(EXIT_FAILURE);
+                [self cleanupAndExit:EXIT_FAILURE];
             });
             return;
         }
@@ -342,7 +379,7 @@ static const NSTimeInterval SUPreInstallationDelay = 3.0;
         [[NSFileManager defaultManager] removeItemAtPath:[[NSBundle mainBundle] bundlePath] error:NULL];
         
         SULog(SULogLevelDefault, @"Autoupdate process will exit");
-        exit(EXIT_SUCCESS);
+        [self cleanupAndExit:EXIT_SUCCESS];
     };
     
     if (self.shouldRelaunch) {
@@ -381,7 +418,8 @@ int main(int __unused argc, const char __unused *argv[])
     {
         NSArray<NSString *> *args = [[NSProcessInfo processInfo] arguments];
         if (args.count < 5 || args.count > 7) {
-            return EXIT_FAILURE;
+            staticCleanupAndExit(EXIT_FAILURE);
+            return EXIT_FAILURE; // This line won't be reached, but keeps compiler happy
         }
         
         NSApplication *application = [NSApplication sharedApplication];
@@ -397,6 +435,7 @@ int main(int __unused argc, const char __unused *argv[])
                                                            updateFolderPath:[args objectAtIndex:4]
                                                              shouldRelaunch:(args.count > 5) ? [[args objectAtIndex:5] boolValue] : YES
                                                                shouldShowUI:shouldShowUI];
+
         [application setDelegate:appInstaller];
         [application run];
     }

@@ -158,8 +158,12 @@ static void SUWriteToLogFile(NSString *message, SULogLevel level) {
             [NSTemporaryDirectory() stringByAppendingPathComponent:@"sparkle_debug.log"]
         ];
         
-        // Test which path is writable
-        NSString *testContent = @"Sparkle log init\n";
+        // Test which path is writable - format with timestamp and PID like other log entries
+        NSDateFormatter *initFormatter = [[NSDateFormatter alloc] init];
+        [initFormatter setDateFormat:@"yyyy-MM-dd HH:mm:ss.SSS"];
+        NSString *initTime = [initFormatter stringFromDate:[NSDate date]];
+        NSString *testContent = [NSString stringWithFormat:@"%@ INFO  [PID:%d] Sparkle log init\n",
+                                initTime, getpid()];
         for (NSString *testPath in candidatePaths) {
             NSFileHandle *testHandle = [NSFileHandle fileHandleForWritingAtPath:testPath];
             if (testHandle) {
@@ -201,10 +205,10 @@ static void SUWriteToLogFile(NSString *message, SULogLevel level) {
             
             NSString *formattedDate = [dateFormatter stringFromDate:[NSDate date]];
             NSString *levelStr = (level == SULogLevelError) ? @"ERROR" : @"INFO ";
-            
-            // Format: datetime level message
-            NSString *timestampedMessage = [NSString stringWithFormat:@"%@ %@ %@\n", 
-                                           formattedDate, levelStr, message];
+
+            // Format: datetime level [PID:xxxxx] message
+            NSString *timestampedMessage = [NSString stringWithFormat:@"%@ %@ [PID:%d] %@\n",
+                                           formattedDate, levelStr, getpid(), message];
             
             NSFileHandle *fileHandle = [NSFileHandle fileHandleForWritingAtPath:logFilePath];
             if (fileHandle) {
